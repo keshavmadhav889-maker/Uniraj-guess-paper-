@@ -20,9 +20,11 @@ CREATE TABLE IF NOT EXISTS orders (
  id BIGSERIAL PRIMARY KEY,
  user_id BIGINT NOT NULL REFERENCES users(id),
  paper_id BIGINT NOT NULL REFERENCES papers(id),
- payment_ref TEXT UNIQUE NOT NULL,
+ razorpay_order_id TEXT UNIQUE,
  amount_paise INTEGER NOT NULL,
  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid','rejected')),
+ payment_ref TEXT UNIQUE,
+ upi_txn_id TEXT UNIQUE,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  approved_at TIMESTAMPTZ
 );
@@ -30,15 +32,18 @@ CREATE TABLE IF NOT EXISTS purchases (
  id BIGSERIAL PRIMARY KEY,
  user_id BIGINT NOT NULL REFERENCES users(id),
  paper_id BIGINT NOT NULL REFERENCES papers(id),
- payment_ref TEXT UNIQUE NOT NULL,
+ razorpay_payment_id TEXT UNIQUE,
+ payment_ref TEXT UNIQUE,
  purchased_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  UNIQUE(user_id,paper_id)
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS razorpay_order_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_ref TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS upi_txn_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
-UPDATE orders SET payment_ref='legacy-'||id WHERE payment_ref IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS orders_payment_ref_uq ON orders(payment_ref);
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS payment_ref TEXT;
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT;
 INSERT INTO papers(title,subject,semester,price_paise) SELECT 'B.Sc. Chemistry Guess Paper','Chemistry','1st Semester',4900 WHERE NOT EXISTS (SELECT 1 FROM papers WHERE title='B.Sc. Chemistry Guess Paper');
 INSERT INTO papers(title,subject,semester,price_paise) SELECT 'B.Sc. Mathematics Guess Paper','Mathematics','1st Semester',4900 WHERE NOT EXISTS (SELECT 1 FROM papers WHERE title='B.Sc. Mathematics Guess Paper');
 INSERT INTO papers(title,subject,semester,price_paise) SELECT 'B.Sc. Physics Guess Paper','Physics','1st Semester',4900 WHERE NOT EXISTS (SELECT 1 FROM papers WHERE title='B.Sc. Physics Guess Paper');
