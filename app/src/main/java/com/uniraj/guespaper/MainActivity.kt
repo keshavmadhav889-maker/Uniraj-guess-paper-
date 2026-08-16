@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +115,7 @@ private fun PaymentDialog(paper: Paper, token: String, context: android.content.
     var txn by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         try { order = ApiProvider.api.createOrder(token, mapOf("paperId" to paper.id)) }
         catch (e: Exception) { msg = e.message ?: "Could not create order" }
@@ -130,8 +131,15 @@ private fun PaymentDialog(paper: Paper, token: String, context: android.content.
             msg?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { Button(enabled = order != null && !busy && txn.isNotBlank(), onClick = {
-        androidx.compose.runtime.LaunchedEffect(Unit) {}
-    }) { Text("Submit Payment") } }, dismissButton = {
+        scope.launch {
+            busy = true
+            try {
+                val response = ApiProvider.api.submitPayment(token, order!!.orderRef, SubmitPaymentRequest(txn))
+                msg = response["message"]?.toString() ?: "Payment submitted for admin approval"
+            } catch (e: Exception) { msg = e.message ?: "Submit failed" }
+            busy = false
+        }
+    }) { Text(if (busy) "Submitting…" else "Submit Payment") } }, dismissButton = {
         TextButton(onClick = { order?.let { launchUpi(context, it.upiId, paper.price_paise / 100) } }) { Text("Open PhonePe") }
     })
 }
