@@ -1,0 +1,8 @@
+{
+  "provider": "UPI",
+  "upiId": "7300349017@ybl",
+  "displayName": "Nitin Saini",
+  "apps": ["PhonePe", "Google Pay", "Paytm", "BHIM"],
+  "verification": "manual_admin_approval",
+  "note": "Payment is not automatically verified. Unlock access only after admin confirms receipt."
+}
