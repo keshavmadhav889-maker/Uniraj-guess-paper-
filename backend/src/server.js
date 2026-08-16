@@ -3,28 +3,22 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import pg from 'pg';
+
 dotenv.config();
+const {Pool}=pg;
 const app=express(); app.use(cors()); app.use(express.json());
-const papers=[
- {id:1,title:'B.Sc. Chemistry Guess Paper',subject:'Chemistry',price:49},
- {id:2,title:'B.Sc. Mathematics Guess Paper',subject:'Mathematics',price:49},
- {id:3,title:'B.Sc. Physics Guess Paper',subject:'Physics',price:49},
- {id:4,title:'B.A. Hindi Guess Paper',subject:'Hindi',price:5}
-];
-app.get('/health',(req,res)=>res.json({ok:true,service:'uniraj-guess-paper-api'}));
-app.get('/api/papers',(req,res)=>res.json(papers));
-app.post('/api/orders',async(req,res)=>{
- const paper=papers.find(p=>p.id===Number(req.body.paperId)); if(!paper) return res.status(404).json({error:'Paper not found'});
- if(!process.env.RAZORPAY_KEY_ID||!process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({error:'Payment gateway is not configured'});
- const razorpay=new Razorpay({key_id:process.env.RAZORPAY_KEY_ID,key_secret:process.env.RAZORPAY_KEY_SECRET});
- try { const order=await razorpay.orders.create({amount:paper.price*100,currency:'INR',receipt:`paper_${paper.id}_${Date.now()}`}); res.json({orderId:order.id,keyId:process.env.RAZORPAY_KEY_ID,amount:order.amount,currency:order.currency,paperId:paper.id}); }
- catch(e){res.status(500).json({error:'Unable to create order'});}
-});
-app.post('/api/payments/verify',(req,res)=>{
- const {razorpay_order_id,razorpay_payment_id,razorpay_signature}=req.body;
- if(!process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({error:'Payment gateway is not configured'});
- const expected=crypto.createHmac('sha256',process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
- if(!crypto.timingSafeEqual(Buffer.from(expected),Buffer.from(razorpay_signature||''))) return res.status(400).json({verified:false,error:'Invalid payment signature'});
- res.json({verified:true,message:'Payment verified'});
-});
-const port=process.env.PORT||8080; app.listen(port,()=>console.log(`API listening on ${port}`));
+const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false}):null;
+const sign=u=>jwt.sign({id:u.id,email:u.email},process.env.JWT_SECRET||'dev-only-secret',{expiresIn:'30d'});
+const auth=async(req,res,next)=>{try{const token=(req.headers.authorization||'').replace('Bearer ',''); if(!token) return res.status(401).json({error:'Login required'}); req.user=jwt.verify(token,process.env.JWT_SECRET||'dev-only-secret'); next();}catch{return res.status(401).json({error:'Invalid session'});}};
+const fallback=[{id:1,title:'B.Sc. Chemistry Guess Paper',subject:'Chemistry',semester:'1st Semester',price_paise:4900},{id:2,title:'B.Sc. Mathematics Guess Paper',subject:'Mathematics',semester:'1st Semester',price_paise:4900},{id:3,title:'B.Sc. Physics Guess Paper',subject:'Physics',semester:'1st Semester',price_paise:4900},{id:4,title:'B.A. Hindi Guess Paper',subject:'Hindi',semester:'1st Semester',price_paise:500}];
+app.get('/health',async(req,res)=>res.json({ok:true,service:'uniraj-guess-paper-api',database:!!pool}));
+app.get('/api/papers',async(req,res)=>{if(!pool)return res.json(fallback); try{const r=await pool.query('SELECT id,title,subject,semester,price_paise FROM papers WHERE active=true ORDER BY id');res.json(r.rows);}catch{res.status(500).json({error:'Unable to load papers'});}});
+app.post('/api/auth/register',async(req,res)=>{if(!pool)return res.status(503).json({error:'Database is not configured'});const {name,email,password}=req.body;if(!name||!email||!password||password.length<6)return res.status(400).json({error:'Name, email and 6+ character password required'});try{const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[name,email.toLowerCase(),hash]);res.status(201).json({user:r.rows[0],token:sign(r.rows[0])});}catch(e){res.status(409).json({error:'Email already registered'});}});
+app.post('/api/auth/login',async(req,res)=>{if(!pool)return res.status(503).json({error:'Database is not configured'});try{const r=await pool.query('SELECT id,name,email,password_hash FROM users WHERE email=$1',[String(req.body.email||'').toLowerCase()]);if(!r.rowCount||!(await bcrypt.compare(req.body.password||'',r.rows[0].password_hash)))return res.status(401).json({error:'Invalid email or password'});const {password_hash,...user}=r.rows[0];res.json({user,token:sign(user)});}catch{res.status(500).json({error:'Login failed'});}});
+app.post('/api/orders',auth,async(req,res)=>{const paperId=Number(req.body.paperId);let paper;if(pool){const r=await pool.query('SELECT * FROM papers WHERE id=$1 AND active=true',[paperId]);paper=r.rows[0];}else paper=fallback.find(p=>p.id===paperId);if(!paper)return res.status(404).json({error:'Paper not found'});if(!process.env.RAZORPAY_KEY_ID||!process.env.RAZORPAY_KEY_SECRET)return res.status(503).json({error:'Payment gateway is not configured'});try{const rp=new Razorpay({key_id:process.env.RAZORPAY_KEY_ID,key_secret:process.env.RAZORPAY_KEY_SECRET});const order=await rp.orders.create({amount:paper.price_paise,currency:'INR',receipt:`paper_${paperId}_${Date.now()}`});if(pool)await pool.query('INSERT INTO orders(user_id,paper_id,razorpay_order_id,amount_paise) VALUES($1,$2,$3,$4)',[req.user.id,paperId,order.id,paper.price_paise]);res.json({orderId:order.id,keyId:process.env.RAZORPAY_KEY_ID,amount:order.amount,currency:order.currency,paperId});}catch(e){res.status(500).json({error:'Unable to create order'});}});
+app.post('/api/payments/verify',auth,async(req,res)=>{const {razorpay_order_id,razorpay_payment_id,razorpay_signature}=req.body;if(!process.env.RAZORPAY_KEY_SECRET)return res.status(503).json({error:'Payment gateway is not configured'});const expected=crypto.createHmac('sha256',process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');if(!razorpay_signature||expected.length!==razorpay_signature.length||!crypto.timingSafeEqual(Buffer.from(expected),Buffer.from(razorpay_signature)))return res.status(400).json({verified:false,error:'Invalid payment signature'});if(pool){const o=await pool.query('SELECT user_id,paper_id FROM orders WHERE razorpay_order_id=$1',[razorpay_order_id]);if(!o.rowCount||o.rows[0].user_id!==req.user.id)return res.status(403).json({error:'Order does not belong to this account'});await pool.query('UPDATE orders SET status=\'paid\' WHERE razorpay_order_id=$1',[razorpay_order_id]);await pool.query('INSERT INTO purchases(user_id,paper_id,razorpay_payment_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[req.user.id,o.rows[0].paper_id,razorpay_payment_id]);}res.json({verified:true,message:'Payment verified and purchase recorded'});});
+app.get('/api/me/purchases',auth,async(req,res)=>{if(!pool)return res.json([]);const r=await pool.query('SELECT p.id,p.title,p.subject,p.semester,p.price_paise,pu.purchased_at FROM purchases pu JOIN papers p ON p.id=pu.paper_id WHERE pu.user_id=$1 ORDER BY pu.purchased_at DESC',[req.user.id]);res.json(r.rows);});
+const port=process.env.PORT||8080;app.listen(port,()=>console.log(`API listening on ${port}`));
